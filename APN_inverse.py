@@ -177,6 +177,7 @@ def validate(cfg):
                         'eqp': eqp, 'group': grp_name, 'optimize': 'tension',
                         'target_bow': round(target_y, 3),
                         'pred_bow': inv['predicted_bow'], 'gap': inv['gap'],
+                        'wire_id': row.get('new_fdc_wire_id', np.nan),
                         'rec_tension': rec, 'actual_tension': act,
                         'diff': round(rec - act, 4) if pd.notna(act) else None,
                         change_col: row.get(change_col, np.nan),
@@ -187,8 +188,11 @@ def validate(cfg):
                           'target_bow': round(target_y, 3),
                           'pred_bow': inv['predicted_bow'], 'gap': inv['gap'],
                           change_col: row.get(change_col, np.nan)}
-                    for tc in ['set_frame_temp_0pct', 'set_frame_temp_60pct',
-                               'set_frame_temp_100pct']:
+                    # wire_id 있으면 기록 (plot에서 라인 구분용)
+                    if 'new_fdc_wire_id' in row:
+                        ro['wire_id'] = row.get('new_fdc_wire_id')
+                    # ★ 온도 12개 전부 저장 (역산 + 실측)
+                    for tc in meta['temp_cols']:
                         ro[f'rec_{tc}'] = rec.get(tc)
                         ro[f'actual_{tc}'] = row.get(tc, np.nan)
                     numeric_rows.append(ro)
