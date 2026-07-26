@@ -70,11 +70,13 @@ def load_model(model_dir):
 # Inverse: 지정 변수만 최적화
 # ============================================================
 def inverse_for_target(model, scaler, meta, target_y, base_row,
-                       optimize='temp', lambda_smooth=0.1):
+                       optimize='temp', lambda_smooth=0.1, eqp_name=None):
     FEATURES = meta['feature_cols']
     X_STATS  = meta['x_stats']
     temp_cols = meta['temp_cols']
     tension_col = meta['tension_col']
+    eqp_cols = meta.get('eqp_cols', [])
+    eqp_prefix = meta.get('eqp_prefix', 'eqp_')
 
     if optimize == 'temp':
         opt_cols = temp_cols
@@ -84,8 +86,20 @@ def inverse_for_target(model, scaler, meta, target_y, base_row,
         raise ValueError(optimize)
     opt_idx = [FEATURES.index(c) for c in opt_cols]
 
-    x_full = np.array([float(base_row.get(c, X_STATS[c]['mean']))
-                       for c in FEATURES])
+    # x_full 구성: recipe/condition은 base_row 값, 장비 더미는 해당 장비만 1
+    def get_val(c):
+        if c in eqp_cols:
+            # 이 lot의 장비에 해당하는 더미만 1
+            if eqp_name is not None:
+                return 1.0 if c == f'{eqp_prefix}{eqp_name}' else 0.0
+            return 0.0
+        v = base_row.get(c, None)
+        # NaN 또는 없으면 학습 평균으로 대체 (NaN 방어)
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return float(X_STATS.get(c, {}).get('mean', 0.0))
+        return float(v)
+
+    x_full = np.array([get_val(c) for c in FEATURES])
 
     def predict(x_vec):
         xx = x_vec.reshape(1, -1)
@@ -154,7 +168,8 @@ def validate(cfg):
                 inv = inverse_for_target(model, scaler, meta, target_y,
                                          base_row=row.to_dict(),
                                          optimize=optimize,
-                                         lambda_smooth=cfg['lambda_smooth'])
+                                         lambda_smooth=cfg['lambda_smooth'],
+                                         eqp_name=eqp)
                 if optimize == 'tension':
                     rec = inv['optimized'][tension_col]
                     act = row.get(tension_col, np.nan)
