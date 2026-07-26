@@ -51,6 +51,7 @@ CONFIG = {
         'split_ratio':  0.8,
         'random_state': 42,
         'use_scaler':   True,
+        'use_eqp_dummy': True,   # ★ 장비 one-hot (temp 부호 복원)
     },
     'features': {
         'recipe_cols': [
@@ -94,16 +95,28 @@ def apply_leakage_removal(df, cfg):
 def train_and_save(d, tag, cfg, out_dir):
     RECIPE = cfg['features']['recipe_cols']
     COND = [c for c in cfg['features']['condition_cols'] if c in d.columns]
-    FEATURES = RECIPE + COND
+    EQP = cfg['meta_cols']['eqp']
     TARGET = cfg['model']['target']
     DATE = cfg['meta_cols']['date']
+    use_eqp = cfg['model'].get('use_eqp_dummy', True)
 
-    sub = d[FEATURES + [TARGET, DATE]].dropna().copy()
+    base_cols = RECIPE + COND
+    sub = d[base_cols + [TARGET, DATE, EQP]].dropna().copy()
     if len(sub) < cfg['min_samples']:
         print(f"  [{tag}] N={len(sub)} < {cfg['min_samples']} → 스킵")
         return None
 
-    X_all = sub[FEATURES].values
+    # 장비 one-hot (Simpson's Paradox 방지 — 장비 개체 효과 흡수)
+    if use_eqp:
+        eqp_dummies = pd.get_dummies(sub[EQP], prefix='eqp')
+        eqp_cols = list(eqp_dummies.columns)
+        sub = pd.concat([sub, eqp_dummies], axis=1)
+        FEATURES = base_cols + eqp_cols
+    else:
+        eqp_cols = []
+        FEATURES = base_cols
+
+    X_all = sub[FEATURES].values.astype(float)
     y_all = sub[TARGET].values
 
     # 랜덤 분할 (참고)
@@ -115,8 +128,8 @@ def train_and_save(d, tag, cfg, out_dir):
     sub[DATE] = pd.to_datetime(sub[DATE], errors='coerce')
     sub_t = sub.sort_values(DATE).reset_index(drop=True)
     si = int(len(sub_t) * cfg['model']['split_ratio'])
-    Xtr_t = sub_t[FEATURES].iloc[:si].values
-    Xte_t = sub_t[FEATURES].iloc[si:].values
+    Xtr_t = sub_t[FEATURES].iloc[:si].values.astype(float)
+    Xte_t = sub_t[FEATURES].iloc[si:].values.astype(float)
     ytr_t = sub_t[TARGET].iloc[:si].values
     yte_t = sub_t[TARGET].iloc[si:].values
 
@@ -166,14 +179,19 @@ def train_and_save(d, tag, cfg, out_dir):
                 'min': float(np.min(a)), 'max': float(np.max(a)),
                 'q01': float(np.quantile(a, 0.01)),
                 'q99': float(np.quantile(a, 0.99))}
+    # x_stats는 recipe/condition만 (더미는 0/1이라 분위수 의미 없음)
+    stat_cols = base_cols
     meta = {
         'tag': tag, 'target': TARGET, 'feature_cols': FEATURES,
         'recipe_cols': RECIPE, 'condition_cols': COND,
+        'eqp_cols': eqp_cols,
         'temp_cols': [c for c in RECIPE if 'set_frame_temp' in c],
         'tension_col': 'fdc_set_tension',
         'use_scaler': cfg['model']['use_scaler'],
+        'use_eqp_dummy': use_eqp,
+        'eqp_prefix': 'eqp_',
         'model_type': cfg['model']['model_type'],
-        'x_stats': {c: stats_of(sub_t[c].values) for c in FEATURES},
+        'x_stats': {c: stats_of(sub_t[c].values) for c in stat_cols},
         'y_stats': stats_of(y_all),
     }
     with open(pt.join(cdir, 'feature_meta.json'), 'w', encoding='utf-8') as f:
