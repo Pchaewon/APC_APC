@@ -138,7 +138,7 @@ def main(cfg):
     tabpfn_ok = False
     try:
         from tabpfn import TabPFNRegressor
-        models['TabPFN'] = (lambda: TabPFNRegressor(), True, True)
+        models['TabPFN'] = (lambda: TabPFNRegressor(ignore_pretraining_limits=True), True, True)
         tabpfn_ok = True
     except ImportError:
         print("  ⚠ TabPFN 미설치")
