@@ -1,22 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-슬라이딩 윈도우 + TabPFN (및 Ridge 비교)
+장비별 슬라이딩 윈도우 + TabPFN (및 Ridge 비교)
 ─────────────────────────────────────────
-아이디어: TabPFN의 in-context learning은 "유사 이웃"에 강한데,
-         먼 과거로 학습하면 그 이웃이 미래에 없어 무너짐.
-         → 최근 W일로만 학습해서 다음 H일 예측하면
-           유사 이웃이 가까운 과거에 있어 살아날 수 있음.
+★ 장비별로 슬라이딩 (전체 혼합 아님):
+  각 장비 안에서 [최근 W일 학습] → [다음 H일 평가], S일씩 이동.
+  이유:
+    · Simpson's Paradox — 장비 섞으면 장비 간 차이가 관계 왜곡
+    · 장비별 시간 이동이 서로 다름
+    · 배포 현실 = "이 장비 최근 데이터 → 이 장비 다음 lot"
 
-방식:
-  · 시간순 정렬 후, [학습 W일] → [평가 H일] 윈도우를 S일씩 이동
-  · 각 윈도우에서 TabPFN vs Ridge의 Test R² 측정
-  · 윈도우별 성능을 평균±표준편차로 집계
+장비별로 나누면 윈도우당 샘플이 적어짐 → min_train 낮춤 / train_days 늘림으로 대응.
 
-핵심 비교:
-  · 단일 시간분할(먼 과거) TabPFN −0.02  vs  슬라이딩(최근) TabPFN ?
-  · TabPFN이 슬라이딩에서 살아나면 → 배포 시 재학습 방식으로 활용 가능
+집계:
+  · (장비, 윈도우)별 R² → 장비별 평균 + 전체 평균
+  · TabPFN vs Ridge 비교
 """
 import os
+os.environ['TABPFN_ALLOW_CPU_LARGE_DATASET'] = '1'
 import os.path as pt
 import numpy as np
 import pandas as pd
@@ -46,14 +46,15 @@ CONFIG = {
         'fdc_set_tension','fdc_wait_time','fdc_ingot_len',
     ],
     'condition_cols': ['range_slurry_temp_10_0'],
-    'use_eqp_dummy': True,        # TabPFN엔 False가 나을 수도 (실험)
-    # 슬라이딩 윈도우 파라미터
-    'train_days': 20,
+    # ★ 장비 더미 불필요 (장비별로 도니까 자동으로 장비 고정)
+    # 슬라이딩 파라미터 (장비별이라 기간 넉넉히)
+    'train_days': 30,     # 장비별이라 20→30으로 늘림 (샘플 확보)
     'eval_days':  10,
     'step_days':  10,
-    'min_train':  100,            # 윈도우 최소 학습 샘플
-    'min_eval':   20,             # 윈도우 최소 평가 샘플
-    'tabpfn_max': 3000,
+    'min_train':  40,     # 장비별이라 100→40으로 낮춤
+    'min_eval':   10,
+    'min_windows_per_eqp': 2,   # 이만큼 윈도우 안 나오는 장비는 제외
+    'tabpfn_max': 2000,
     'encoding':   'utf-8',
 }
 
@@ -63,20 +64,14 @@ def prepare(cfg):
                      encoding_errors='replace')
     if cfg['process_time']:
         df = df[df['process_time'] == cfg['process_time']]
-    DATE = cfg['date_col']; EQP = cfg['eqp_col']
+    DATE = cfg['date_col']
     df[DATE] = pd.to_datetime(df[DATE], errors='coerce')
-
     COND = [c for c in cfg['condition_cols'] if c in df.columns]
-    base = cfg['recipe_cols'] + COND
-    sub = df[base + [cfg['target'], DATE, EQP]].dropna().copy()
-    sub = sub.sort_values(DATE).reset_index(drop=True)
-
-    if cfg['use_eqp_dummy']:
-        dummies = pd.get_dummies(sub[EQP], prefix='eqp')
-        sub = pd.concat([sub, dummies], axis=1)
-        FEATURES = base + list(dummies.columns)
-    else:
-        FEATURES = base
+    FEATURES = cfg['recipe_cols'] + COND
+    keep = FEATURES + [cfg['target'], DATE, cfg['eqp_col']]
+    sub = df[keep].dropna().copy()
+    # 장비별 시간 정렬
+    sub = sub.sort_values([cfg['eqp_col'], DATE]).reset_index(drop=True)
     return sub, FEATURES
 
 
@@ -84,6 +79,9 @@ def eval_window(model_fn, Xtr, Xte, ytr, yte, is_tabpfn, cfg):
     try:
         if is_tabpfn and len(ytr) > cfg['tabpfn_max']:
             Xtr, ytr = Xtr[-cfg['tabpfn_max']:], ytr[-cfg['tabpfn_max']:]
+        # 소샘플 방어
+        if len(ytr) < 5 or len(yte) < 3:
+            return None, "샘플 부족"
         sc = StandardScaler().fit(Xtr)
         m = model_fn()
         m.fit(sc.transform(Xtr), ytr)
@@ -92,97 +90,119 @@ def eval_window(model_fn, Xtr, Xte, ytr, yte, is_tabpfn, cfg):
         return None, str(e)
 
 
-def main(cfg):
-    os.makedirs(cfg['out_dir'], exist_ok=True)
-    sub, FEATURES = prepare(cfg)
+def slide_one_eqp(esub, eqp, FEATURES, models, cfg):
+    """단일 장비 내 슬라이딩."""
     DATE = cfg['date_col']; TARGET = cfg['target']
-
-    # 모델
-    models = {'Ridge': (lambda: Ridge(alpha=5.0), False)}
-    try:
-        from tabpfn import TabPFNRegressor
-        models['TabPFN'] = (lambda: TabPFNRegressor(), True)
-    except ImportError:
-        print("  ⚠ TabPFN 미설치 — Ridge만 실행")
-
-    d_min, d_max = sub[DATE].min(), sub[DATE].max()
-    print(f"[기간] {d_min.date()} ~ {d_max.date()}")
-    print(f"[윈도우] 학습 {cfg['train_days']}일 / 평가 {cfg['eval_days']}일 / "
-          f"이동 {cfg['step_days']}일")
-
-    # 슬라이딩
+    d_min, d_max = esub[DATE].min(), esub[DATE].max()
     rows = []
     cur = d_min
-    win_id = 0
+    wid = 0
     while True:
-        tr_start = cur
-        tr_end = tr_start + timedelta(days=cfg['train_days'])
+        tr_end = cur + timedelta(days=cfg['train_days'])
         te_end = tr_end + timedelta(days=cfg['eval_days'])
         if te_end > d_max + timedelta(days=1):
             break
-
-        tr = sub[(sub[DATE] >= tr_start) & (sub[DATE] < tr_end)]
-        te = sub[(sub[DATE] >= tr_end) & (sub[DATE] < te_end)]
-
+        tr = esub[(esub[DATE] >= cur) & (esub[DATE] < tr_end)]
+        te = esub[(esub[DATE] >= tr_end) & (esub[DATE] < te_end)]
         if len(tr) >= cfg['min_train'] and len(te) >= cfg['min_eval']:
-            Xtr = tr[FEATURES].values.astype(float)
-            ytr = tr[TARGET].values
-            Xte = te[FEATURES].values.astype(float)
-            yte = te[TARGET].values
-
-            row = {'window': win_id,
-                   'train_start': tr_start.date(), 'train_end': tr_end.date(),
-                   'n_train': len(tr), 'n_eval': len(te)}
+            Xtr = tr[FEATURES].values.astype(float); ytr = tr[TARGET].values
+            Xte = te[FEATURES].values.astype(float); yte = te[TARGET].values
+            row = {'eqp': eqp, 'window': wid,
+                   'train_start': cur.date(), 'n_train': len(tr), 'n_eval': len(te)}
             for name, (fn, is_tab) in models.items():
                 r2, err = eval_window(fn, Xtr, Xte, ytr, yte, is_tab, cfg)
                 row[f'{name}_r2'] = round(r2, 4) if r2 is not None else None
-            rows.append(row)
-            win_id += 1
-            msg = ' | '.join(f"{n}={row.get(f'{n}_r2')}" for n in models)
-            print(f"  W{win_id}: {tr_start.date()}~{te_end.date()} "
-                  f"(tr{len(tr)}/te{len(te)}) {msg}")
-
+            rows.append(row); wid += 1
         cur = cur + timedelta(days=cfg['step_days'])
+    return rows
 
-    res = pd.DataFrame(rows)
-    if len(res) == 0:
-        print("⚠ 유효 윈도우 없음 — 파라미터(train_days 등) 조정 필요")
+
+def main(cfg):
+    os.makedirs(cfg['out_dir'], exist_ok=True)
+    sub, FEATURES = prepare(cfg)
+    EQP = cfg['eqp_col']
+    print(f"[데이터] {len(sub)}행, {sub[EQP].nunique()}대 장비, feature {len(FEATURES)}개")
+
+    models = {'Ridge': (lambda: Ridge(alpha=5.0), False)}
+    try:
+        from tabpfn import TabPFNRegressor
+        models['TabPFN'] = (lambda: TabPFNRegressor(ignore_pretraining_limits=True), True)
+    except ImportError:
+        print("  ⚠ TabPFN 미설치 — Ridge만")
+
+    # 장비별 슬라이딩
+    all_rows = []
+    eqp_list = sorted(sub[EQP].unique())
+    print(f"[장비별 슬라이딩] 학습 {cfg['train_days']}일/평가 {cfg['eval_days']}일/"
+          f"이동 {cfg['step_days']}일\n")
+
+    for eqp in eqp_list:
+        esub = sub[sub[EQP] == eqp].reset_index(drop=True)
+        rows = slide_one_eqp(esub, eqp, FEATURES, models, cfg)
+        if len(rows) >= cfg['min_windows_per_eqp']:
+            all_rows.extend(rows)
+            msg = []
+            for name in models:
+                vals = [r[f'{name}_r2'] for r in rows
+                        if r.get(f'{name}_r2') is not None]
+                if vals:
+                    msg.append(f"{name} μ={np.mean(vals):+.3f}({len(vals)}win)")
+            print(f"  {eqp}: {' | '.join(msg)}")
+
+    if not all_rows:
+        print("\n⚠ 유효 윈도우 없음 — train_days↑ 또는 min_train↓ 필요")
         return
-    res.to_csv(pt.join(cfg['out_dir'], 'sliding_results.csv'),
+
+    res = pd.DataFrame(all_rows)
+    res.to_csv(pt.join(cfg['out_dir'], 'sliding_by_eqp.csv'),
                index=False, encoding='utf-8-sig')
 
-    # 집계
-    print(f"\n{'='*56}\n집계 (윈도우 {len(res)}개)\n{'='*56}")
+    # ── 집계 ──
+    print(f"\n{'='*60}\n집계\n{'='*60}")
+    print(f"총 (장비,윈도우): {len(res)}개, 장비 {res['eqp'].nunique()}대")
     for name in models:
         col = f'{name}_r2'
+        if col not in res.columns: continue
         vals = res[col].dropna()
-        if len(vals) > 0:
-            print(f"  {name}: 평균 R²={vals.mean():+.3f} ± {vals.std():.3f} "
-                  f"(범위 {vals.min():.3f}~{vals.max():.3f})")
+        if len(vals) == 0: continue
+        # 전체 윈도우 평균
+        print(f"\n  [{name}]")
+        print(f"    전체 윈도우 평균 R²: {vals.mean():+.3f} ± {vals.std():.3f}")
+        # 장비별 평균 → 그것들의 평균 (장비 균등 가중)
+        eqp_means = res.groupby('eqp')[col].mean().dropna()
+        print(f"    장비별 평균의 평균: {eqp_means.mean():+.3f} "
+              f"(장비 {len(eqp_means)}대)")
+        print(f"    양수 윈도우 비율: {(vals > 0).mean()*100:.0f}%")
 
     _plot(res, list(models.keys()), cfg)
     print(f"\n💾 저장: {cfg['out_dir']}/")
-    print(f"\n[해석] 슬라이딩에서 TabPFN 평균 R²가 단일 시간분할(-0.02)보다")
-    print(f"       크게 높으면 → 재학습 방식으로 TabPFN 활용 가능")
+    print(f"\n[해석]")
+    print(f"  · 장비별 슬라이딩은 장비 효과 자동 제거 + 배포 현실 반영")
+    print(f"  · TabPFN이 여기서 Ridge를 이기면 → 소샘플 재학습에 TabPFN 강점")
     return res
 
 
 def _plot(res, model_names, cfg):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
 
-    # 좌: 윈도우별 R² 추이
-    for name in model_names:
+    # 좌: 장비별 평균 R² (막대)
+    eqps = sorted(res['eqp'].unique())
+    x = np.arange(len(eqps))
+    w = 0.8 / max(len(model_names), 1)
+    for i, name in enumerate(model_names):
         col = f'{name}_r2'
-        if col in res.columns:
-            ax1.plot(res['window'], res[col], 'o-', label=name, linewidth=1.5)
+        if col not in res.columns: continue
+        means = [res[res['eqp'] == e][col].mean() for e in eqps]
+        ax1.bar(x + i*w, means, w, label=name, edgecolor='k', linewidth=0.4)
     ax1.axhline(0, color='k', linewidth=0.8)
-    ax1.axhline(-0.023, color='red', linestyle=':', alpha=0.6,
-                label='단일분할 TabPFN(-0.02)')
-    ax1.set_xlabel('윈도우 번호 (시간 순)'); ax1.set_ylabel('Test R²')
-    ax1.set_title('슬라이딩 윈도우별 성능 추이', fontweight='bold')
-    ax1.legend(fontsize=8); ax1.grid(alpha=0.3)
+    ax1.set_xticks(x + w*(len(model_names)-1)/2)
+    ax1.set_xticklabels([e.replace('BSWS','') for e in eqps], fontsize=7,
+                        rotation=45)
+    ax1.set_xlabel('장비'); ax1.set_ylabel('장비별 평균 Test R²')
+    ax1.set_title('장비별 슬라이딩 평균 성능', fontweight='bold')
+    ax1.legend(fontsize=9); ax1.grid(axis='y', alpha=0.3)
 
-    # 우: 모델별 분포 (박스)
+    # 우: 모델별 전체 분포 (박스)
     data, labels = [], []
     for name in model_names:
         col = f'{name}_r2'
@@ -191,21 +211,24 @@ def _plot(res, model_names, cfg):
             if len(v) > 0:
                 data.append(v.values); labels.append(name)
     if data:
-        bp = ax2.boxplot(data, labels=labels, patch_artist=True)
+        try:
+            bp = ax2.boxplot(data, tick_labels=labels, patch_artist=True)
+        except TypeError:
+            bp = ax2.boxplot(data, labels=labels, patch_artist=True)
         for patch in bp['boxes']:
             patch.set_facecolor('#3498db'); patch.set_alpha(0.5)
         for i, v in enumerate(data, 1):
             ax2.text(i, np.mean(v), f'μ={np.mean(v):.3f}', ha='center',
                      va='bottom', fontsize=9, fontweight='bold')
     ax2.axhline(0, color='k', linewidth=0.8)
-    ax2.set_ylabel('Test R²')
-    ax2.set_title('모델별 성능 분포 (전 윈도우)', fontweight='bold')
+    ax2.set_ylabel('Test R² (전 윈도우)')
+    ax2.set_title('모델별 성능 분포', fontweight='bold')
     ax2.grid(axis='y', alpha=0.3)
 
-    fig.suptitle('슬라이딩 윈도우 재학습: TabPFN vs Ridge',
+    fig.suptitle('장비별 슬라이딩 윈도우: TabPFN vs Ridge',
                  fontsize=13, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(pt.join(cfg['out_dir'], 'sliding_tabpfn.png'), dpi=150,
+    plt.savefig(pt.join(cfg['out_dir'], 'sliding_by_eqp.png'), dpi=150,
                 bbox_inches='tight')
     plt.close()
     print("📊 그림 저장")
