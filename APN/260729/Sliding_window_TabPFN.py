@@ -48,12 +48,13 @@ CONFIG = {
     'condition_cols': ['range_slurry_temp_10_0'],
     # ★ 장비 더미 불필요 (장비별로 도니까 자동으로 장비 고정)
     # 슬라이딩 파라미터 (장비별이라 기간 넉넉히)
-    'train_days': 30,     # 장비별이라 20→30으로 늘림 (샘플 확보)
-    'eval_days':  10,
-    'step_days':  10,
-    'min_train':  40,     # 장비별이라 100→40으로 낮춤
-    'min_eval':   10,
-    'min_windows_per_eqp': 2,   # 이만큼 윈도우 안 나오는 장비는 제외
+    'train_days': 60,     # 30→60 (평가 샘플·분산 확보)
+    'eval_days':  20,     # 10→20 (평가 분산 확보, R² 폭발 방지)
+    'step_days':  20,
+    'min_train':  50,
+    'min_eval':   20,     # 평가 최소 20개 (R² 안정)
+    'min_eval_std': 0.1,  # ★ 평가 y 표준편차 하한 (미만이면 윈도우 제외)
+    'min_windows_per_eqp': 2,
     'tabpfn_max': 2000,
     'encoding':   'utf-8',
 }
@@ -80,14 +81,22 @@ def eval_window(model_fn, Xtr, Xte, ytr, yte, is_tabpfn, cfg):
         if is_tabpfn and len(ytr) > cfg['tabpfn_max']:
             Xtr, ytr = Xtr[-cfg['tabpfn_max']:], ytr[-cfg['tabpfn_max']:]
         # 소샘플 방어
-        if len(ytr) < 5 or len(yte) < 3:
-            return None, "샘플 부족"
+        if len(ytr) < cfg['min_train'] or len(yte) < cfg['min_eval']:
+            return None, "샘플 부족", None
+        # ★ 평가 y 분산 체크 (분산 작으면 R² 폭발 → 제외)
+        if np.std(yte) < cfg.get('min_eval_std', 0.1):
+            return None, "평가 분산 too small", None
         sc = StandardScaler().fit(Xtr)
         m = model_fn()
         m.fit(sc.transform(Xtr), ytr)
-        return r2_score(yte, m.predict(sc.transform(Xte))), None
+        pred = m.predict(sc.transform(Xte))
+        r2 = r2_score(yte, pred)
+        mae = float(np.mean(np.abs(pred - yte)))
+        # ★ R² 클리핑 (폭발 방지, -2 미만은 -2로)
+        r2_clip = max(r2, -2.0)
+        return r2_clip, None, mae
     except Exception as e:
-        return None, str(e)
+        return None, str(e), None
 
 
 def slide_one_eqp(esub, eqp, FEATURES, models, cfg):
@@ -110,8 +119,9 @@ def slide_one_eqp(esub, eqp, FEATURES, models, cfg):
             row = {'eqp': eqp, 'window': wid,
                    'train_start': cur.date(), 'n_train': len(tr), 'n_eval': len(te)}
             for name, (fn, is_tab) in models.items():
-                r2, err = eval_window(fn, Xtr, Xte, ytr, yte, is_tab, cfg)
+                r2, err, mae = eval_window(fn, Xtr, Xte, ytr, yte, is_tab, cfg)
                 row[f'{name}_r2'] = round(r2, 4) if r2 is not None else None
+                row[f'{name}_mae'] = round(mae, 4) if mae is not None else None
             rows.append(row); wid += 1
         cur = cur + timedelta(days=cfg['step_days'])
     return rows
@@ -162,17 +172,23 @@ def main(cfg):
     print(f"총 (장비,윈도우): {len(res)}개, 장비 {res['eqp'].nunique()}대")
     for name in models:
         col = f'{name}_r2'
+        mcol = f'{name}_mae'
         if col not in res.columns: continue
         vals = res[col].dropna()
         if len(vals) == 0: continue
-        # 전체 윈도우 평균
         print(f"\n  [{name}]")
-        print(f"    전체 윈도우 평균 R²: {vals.mean():+.3f} ± {vals.std():.3f}")
-        # 장비별 평균 → 그것들의 평균 (장비 균등 가중)
+        # R² (클리핑됨) — 중앙값도 함께 (평균은 이상치에 민감)
+        print(f"    R² 평균: {vals.mean():+.3f} | 중앙값: {vals.median():+.3f}")
         eqp_means = res.groupby('eqp')[col].mean().dropna()
         print(f"    장비별 평균의 평균: {eqp_means.mean():+.3f} "
               f"(장비 {len(eqp_means)}대)")
+        print(f"    장비별 중앙값의 중앙값: {res.groupby('eqp')[col].median().median():+.3f}")
         print(f"    양수 윈도우 비율: {(vals > 0).mean()*100:.0f}%")
+        # MAE (R²보다 안정적)
+        if mcol in res.columns:
+            mvals = res[mcol].dropna()
+            if len(mvals) > 0:
+                print(f"    MAE 평균: {mvals.mean():.4f} (BOW 단위, 낮을수록 좋음)")
 
     _plot(res, list(models.keys()), cfg)
     print(f"\n💾 저장: {cfg['out_dir']}/")
@@ -195,6 +211,7 @@ def _plot(res, model_names, cfg):
         means = [res[res['eqp'] == e][col].mean() for e in eqps]
         ax1.bar(x + i*w, means, w, label=name, edgecolor='k', linewidth=0.4)
     ax1.axhline(0, color='k', linewidth=0.8)
+    ax1.set_ylim(-2.1, 1.0)   # 클리핑된 R² 범위
     ax1.set_xticks(x + w*(len(model_names)-1)/2)
     ax1.set_xticklabels([e.replace('BSWS','') for e in eqps], fontsize=7,
                         rotation=45)
