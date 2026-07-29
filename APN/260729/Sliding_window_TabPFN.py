@@ -83,16 +83,36 @@ def eval_window(model_fn, Xtr, Xte, ytr, yte, is_tabpfn, cfg):
         # 소샘플 방어
         if len(ytr) < cfg['min_train'] or len(yte) < cfg['min_eval']:
             return None, "샘플 부족", None
-        # ★ 평가 y 분산 체크 (분산 작으면 R² 폭발 → 제외)
+        # 평가 y 분산 체크 (분산 작으면 R² 폭발 → 제외)
         if np.std(yte) < cfg.get('min_eval_std', 0.1):
             return None, "평가 분산 too small", None
-        sc = StandardScaler().fit(Xtr)
+
+        # ★ 스케일링 방어 1: 분산 0인 feature 제거 (train 기준)
+        train_std = Xtr.std(axis=0)
+        valid_cols = train_std > 1e-8
+        if valid_cols.sum() == 0:
+            return None, "유효 feature 없음", None
+        Xtr_v, Xte_v = Xtr[:, valid_cols], Xte[:, valid_cols]
+
+        # 스케일링
+        sc = StandardScaler().fit(Xtr_v)
+        Xtr_s = sc.transform(Xtr_v)
+        Xte_s = sc.transform(Xte_v)
+
+        # ★ 스케일링 방어 2: test에서 극단 외삽 클리핑 (train 범위 ±5σ)
+        Xte_s = np.clip(Xte_s, -5.0, 5.0)
+
         m = model_fn()
-        m.fit(sc.transform(Xtr), ytr)
-        pred = m.predict(sc.transform(Xte))
+        m.fit(Xtr_s, ytr)
+        pred = m.predict(Xte_s)
+
+        # ★ 스케일링 방어 3: 예측값도 train y 범위로 클리핑
+        y_lo, y_hi = ytr.min(), ytr.max()
+        y_margin = (y_hi - y_lo) * 0.5 + 1e-6
+        pred = np.clip(pred, y_lo - y_margin, y_hi + y_margin)
+
         r2 = r2_score(yte, pred)
         mae = float(np.mean(np.abs(pred - yte)))
-        # ★ R² 클리핑 (폭발 방지, -2 미만은 -2로)
         r2_clip = max(r2, -2.0)
         return r2_clip, None, mae
     except Exception as e:
