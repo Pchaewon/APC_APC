@@ -107,38 +107,30 @@ def adapt_columns(df, verbose=True):
     # 적용
     df = df.rename(columns=rename)
 
-    # ── process_time 파생 (RECIPE_ID → 133/180 그룹) ──
-    # RECIPE_ID에서 3자리 숫자 추출 → recipe_map으로 13.3Hr/18.5Hr 분류
-    #   133 or 150 → '13.3Hr'  (133 그룹)
-    #   185 or 180 → '18.5Hr'  (180 그룹)
+    # ── process_time 파생 (RECIPE_ID → 13.3Hr/18.5Hr) ──
+    #   RECIPE_ID 형태: '숫자-숫자' (예: 2-133, 10-150, 11-185)
+    #   하이픈 뒤 3자리가 recipe_time → 13.3Hr/18.5Hr 분류
+    #     133 or 150 → '13.3Hr'    185 or 180 → '18.5Hr'
     if 'process_time' not in df.columns:
-        rid_col = _find(df, ['RECIPE_ID', 'FDC_RECIPE_ID', 'fdc_recipe_id',
-                             'RECIP_ID_3200', 'recip_id_3200'])
+        rid_col = _find(df, ['RECIPE_ID'])
         if rid_col:
-            import re
-            # RECIPE_ID 형태: '숫자-숫자' (예: 2-133, 10-150, 11-185)
-            #   → 하이픈 뒤 숫자가 recipe_time. 없으면 마지막 3자리.
-            rid_str = df[rid_col].astype(str)
-            recipe_time = rid_str.str.extract(r'-\s*(\d{3})')[0]   # 하이픈 뒤 3자리
-            # 하이픈 없는 경우 fallback: 마지막 3자리 숫자
-            fallback = rid_str.str.extract(r'(\d{3})(?!.*\d)')[0]
-            recipe_time = recipe_time.fillna(fallback)
-            recipe_time = pd.to_numeric(recipe_time, errors='coerce')
+            recipe_time = pd.to_numeric(
+                df[rid_col].astype(str).str.extract(r'-\s*(\d{3})')[0],
+                errors='coerce')
             recipe_map = {'13.3Hr': [133, 150], '18.5Hr': [185, 180]}
             def to_process_time(v):
                 if pd.isna(v):
                     return None
-                iv = int(v)
                 for label, vals in recipe_map.items():
-                    if iv in vals:
+                    if int(v) in vals:
                         return label
                 return None
             df['process_time'] = recipe_time.apply(to_process_time)
-            n_133 = (df['process_time'] == '13.3Hr').sum()
-            n_185 = (df['process_time'] == '18.5Hr').sum()
             if verbose:
-                print(f"  process_time 파생: {rid_col} → "
-                      f"13.3Hr={n_133}, 18.5Hr={n_185}")
+                n133 = (df['process_time'] == '13.3Hr').sum()
+                n185 = (df['process_time'] == '18.5Hr').sum()
+                print(f"  process_time 파생: RECIPE_ID → "
+                      f"13.3Hr={n133}, 18.5Hr={n185}")
         elif verbose:
             print(f"  ⚠ RECIPE_ID 없음 → process_time 파생 불가")
 
