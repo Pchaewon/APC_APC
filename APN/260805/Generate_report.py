@@ -60,6 +60,13 @@ CONFIG = {
     'roll_source_cols': ['fdc_set_tension','fdc_wait_time','fdc_ingot_len',
                          'range_slurry_temp_10_0'],
     'lag': 2, 'window': 10, 'min_runs': 3,
+    # BOW 스펙 (양품 범위) + 목표선
+    'bow_spec': (1.5, 2.0),           # 스펙 하한/상한
+    'bow_target': 1.75,               # 목표선
+    # 신뢰도 판정 (직전 WG 상태)
+    'wg_col': 'range_wire_guide_10_99',
+    'wg_var_threshold': 11.6,
+    'report_title': 'Wire Saw APC Report',
     'encoding': 'utf-8',
 }
 
@@ -133,49 +140,71 @@ def fig_to_base64(fig):
     return base64.b64encode(buf.read()).decode('utf-8')
 
 
-def plot_profile(pcts, values, title, ylabel='Temp'):
-    fig, ax = plt.subplots(figsize=(5, 3.2))
-    ax.plot(pcts, values, 'o-', color='#2c6e9c', linewidth=2, markersize=5)
-    ax.set_xlabel('Position (%)'); ax.set_ylabel(ylabel)
-    ax.set_title(title, fontweight='bold', fontsize=11)
-    ax.grid(alpha=0.3)
+def plot_profile(pcts, values, title, ylabel='Temp (°C)', accent='#1b3a5c'):
+    fig, ax = plt.subplots(figsize=(6.0, 3.0))
+    ax.plot(pcts, values, 'o-', color=accent, linewidth=2, markersize=5,
+            markerfacecolor='white', markeredgewidth=1.5, zorder=3)
+    ax.fill_between(pcts, values, min(v for v in values if v is not None),
+                    alpha=0.06, color=accent, zorder=1)
+    ax.set_xlabel('Position (%)', fontsize=9, color='#4a5568')
+    ax.set_ylabel(ylabel, fontsize=9, color='#4a5568')
+    ax.grid(alpha=0.25, linewidth=0.6)
     ax.set_xticks([0,10,20,30,40,50,60,70,80,90,100])
+    ax.tick_params(labelsize=8, colors='#4a5568')
+    for spine in ['top','right']:
+        ax.spines[spine].set_visible(False)
+    for spine in ['left','bottom']:
+        ax.spines[spine].set_color('#cbd5e0')
+    fig.patch.set_facecolor('white')
     return fig_to_base64(fig)
 
 
-def plot_trend_row(recent, cols_map, trend_n, title_prefix, lot_labels=None):
-    """Total/Seed/Mid/Tail 4개 그래프를 한 줄로.
-    lot_labels: x축에 표시할 lot 이름 리스트 (최근 trend_n개). None이면 순번."""
+def plot_trend_row(recent, cols_map, trend_n, title_prefix, lot_labels=None,
+                   spec=None, target=None, accent='#c0563b'):
+    """Total/Seed/Mid/Tail 4개 그래프. 스펙선·목표선 옵션, x축 겹침 방지."""
     imgs = {}
     for pos, col in cols_map.items():
-        fig, ax = plt.subplots(figsize=(3, 2.5))
+        fig, ax = plt.subplots(figsize=(3.1, 2.6))
         if col in recent.columns:
             s = recent[col].dropna().tail(trend_n)
             y = s.values
             if len(y) == 0:
-                ax.text(0.5, 0.5, f'{col}\n값 없음(빈 데이터)', ha='center',
-                        va='center', transform=ax.transAxes, fontsize=7,
-                        color='#c0563b')
-                print(f"    [{title_prefix}/{pos}] 컬럼 '{col}' 있으나 값 0개")
+                ax.text(0.5, 0.5, '데이터 없음', ha='center', va='center',
+                        transform=ax.transAxes, fontsize=8, color='#a0aec0')
             else:
                 x = np.arange(len(y))
-                ax.plot(x, y, 'o-', color='#c0563b', linewidth=1.8, markersize=4)
-                # x축 라벨: lot 이름 (해당 값들의 인덱스에 맞춰)
+                # 스펙/목표 (BOW Trend에만)
+                if spec is not None:
+                    ax.axhspan(spec[0], spec[1], color='#2ecc71', alpha=0.07, zorder=0)
+                    ax.axhline(spec[0], color='#27ae60', lw=0.8, ls='--', alpha=0.7, zorder=1)
+                    ax.axhline(spec[1], color='#27ae60', lw=0.8, ls='--', alpha=0.7, zorder=1)
+                if target is not None:
+                    ax.axhline(target, color='#4a5568', lw=0.8, ls=':', alpha=0.8, zorder=1)
+                ax.plot(x, y, 'o-', color=accent, linewidth=1.8, markersize=4,
+                        markerfacecolor='white', markeredgewidth=1.2, zorder=3)
+                # x축 겹침 방지: lot 라벨을 최대 5개만 (처음/끝 포함 균등)
                 if lot_labels is not None:
-                    labels = lot_labels[-len(y):]  # 값 개수에 맞춤
-                    ax.set_xticks(x)
-                    ax.set_xticklabels(labels, fontsize=6, rotation=60, ha='right')
-                print(f"    [{title_prefix}/{pos}] '{col}' {len(y)}개 값 → 그림 OK")
-            ax.set_title(pos, fontsize=10, fontweight='bold')
+                    labels = lot_labels[-len(y):]
+                    n = len(labels)
+                    step = max(1, n // 5)
+                    show_idx = list(range(0, n, step))
+                    if n-1 not in show_idx:
+                        show_idx.append(n-1)
+                    ax.set_xticks([x[i] for i in show_idx])
+                    ax.set_xticklabels([labels[i] for i in show_idx],
+                                       fontsize=6.5, rotation=45, ha='right',
+                                       color='#4a5568')
+            ax.set_title(pos, fontsize=10, fontweight='bold', color='#1b3a5c')
         else:
-            ax.text(0.5, 0.5, f'{col}\n컬럼 없음', ha='center', va='center',
-                    transform=ax.transAxes, fontsize=8, color='gray')
-            ax.set_title(pos, fontsize=10, fontweight='bold')
-            print(f"    [{title_prefix}/{pos}] 컬럼 '{col}' 자체가 데이터에 없음")
-        if lot_labels is None:
-            ax.set_xlabel('최근 lot', fontsize=8)
-        ax.grid(alpha=0.3)
-        ax.tick_params(labelsize=7)
+            ax.text(0.5, 0.5, '컬럼 없음', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=8, color='#a0aec0')
+            ax.set_title(pos, fontsize=10, fontweight='bold', color='#1b3a5c')
+        ax.grid(alpha=0.22, linewidth=0.6)
+        ax.tick_params(labelsize=7, colors='#4a5568')
+        for spine in ['top','right']:
+            ax.spines[spine].set_visible(False)
+        for spine in ['left','bottom']:
+            ax.spines[spine].set_color('#cbd5e0')
         imgs[pos] = fig_to_base64(fig)
     return imgs
 
@@ -205,6 +234,20 @@ def build_report(cfg):
         if src in esub.columns and len(esub) > 0:
             roll_values[rc] = float(esub[src].tail(cfg['window']).mean())
 
+    # ── 신뢰도 판정 (직전 WG 상태) ──
+    confidence, conf_note = 'unknown', '직전 WG 정보 부족'
+    wg_col = cfg.get('wg_col')
+    if wg_col and wg_col in esub.columns and len(esub) >= 2:
+        # 최근(현재 직전) WG 이동중앙값
+        prev_wg = esub[wg_col].iloc[:-1].tail(cfg['window']).median()
+        if pd.notna(prev_wg):
+            if prev_wg >= cfg['wg_var_threshold']:
+                confidence = 'high'
+                conf_note = '직전 Wire Guide 고변동 · 온도–BOW 관계 뚜렷 (예측 R²≈0.44) · 적극 반영 권장'
+            else:
+                confidence = 'low'
+                conf_note = '직전 Wire Guide 저변동 · 관계 약함 (예측 R²≈0.09) · 참고용, 현재 recipe 유지 고려'
+
     # ── 역산: Frame / Slurry (각 전용 모델) ──
     frame_inv = inverse_profile(cfg['model_dir'], 'frame', cfg['target_bow'],
                                 roll_values, eqp)
@@ -223,9 +266,9 @@ def build_report(cfg):
                   if frame_inv else [None]*12)
     slurry_vals = ([slurry_inv['recipe'].get(c) for c in cfg['slurry_cols']]
                    if slurry_inv else [None]*12)
-    frame_img = (plot_profile(pcts, frame_vals, 'Frame in Temp')
+    frame_img = (plot_profile(pcts, frame_vals, 'Frame in Temp', accent='#1b3a5c')
                  if frame_inv else None)
-    slurry_img = (plot_profile(pcts, slurry_vals, 'Slurry in Temp')
+    slurry_img = (plot_profile(pcts, slurry_vals, 'Slurry in Temp', accent='#2c7a7b')
                   if slurry_inv else None)
 
     # ── Trend 그림 ──
@@ -246,19 +289,23 @@ def build_report(cfg):
         lot_labels = esub[lot_col].tail(cfg['trend_n']).astype(str).tolist()
         print(f"  lot 이름 컬럼: '{lot_col}', 예시: {lot_labels[:2]}")
     warp_imgs = plot_trend_row(esub, cfg['warp_cols'], cfg['trend_n'], 'Warp',
-                               lot_labels=lot_labels)
+                               lot_labels=lot_labels, accent='#b7791f')
     bow_imgs = plot_trend_row(esub, cfg['bow_cols'], cfg['trend_n'], 'Bow',
-                              lot_labels=lot_labels)
+                              lot_labels=lot_labels, spec=cfg.get('bow_spec'),
+                              target=cfg.get('bow_target'), accent='#c0563b')
 
-    # ── 테이블 HTML ──
+    # ── 테이블 HTML (세로형: %와 추천값 2열) ──
     def profile_table(vals, cols):
         if vals[0] is None:
-            return '<p class="muted">해당 프로파일 컬럼 없음</p>'
-        head = ''.join(f'<th>{p}</th>' for p in pcts)
-        body = ''.join(f'<td>{v:.1f}</td>' if v is not None else '<td>-</td>'
-                       for v in vals)
-        return (f'<table class="recipe-tbl"><thead><tr><th>%</th>{head}</tr>'
-                f'</thead><tbody><tr><th>추천 Temp</th>{body}</tr></tbody></table>')
+            return '<p class="muted">해당 프로파일 데이터 없음</p>'
+        rows = ''.join(
+            f'<tr><td class="pct">{p}%</td>'
+            f'<td class="val">{v:.1f}</td></tr>' if v is not None
+            else f'<tr><td class="pct">{p}%</td><td class="val">–</td></tr>'
+            for p, v in zip(pcts, vals))
+        return (f'<table class="recipe-tbl"><thead>'
+                f'<tr><th>Position</th><th>Temp (°C)</th></tr></thead>'
+                f'<tbody>{rows}</tbody></table>')
 
     frame_tbl = profile_table(frame_vals, cfg['frame_cols'])
     slurry_tbl = profile_table(slurry_vals, cfg['slurry_cols'])
@@ -266,7 +313,8 @@ def build_report(cfg):
     # ── HTML 조립 ──
     html = _render_html(cfg, eqp, today, frame_img, frame_tbl,
                         slurry_img, slurry_tbl, bow_lo, bow_hi,
-                        warp_imgs, bow_imgs)
+                        warp_imgs, bow_imgs, confidence, conf_note,
+                        pred_bow, mae)
 
     out_path = pt.join(cfg['out_dir'],
                        f'report_{eqp}_{today.replace(".", "")}.html')
@@ -283,125 +331,240 @@ def _img_tag(b64, alt=''):
 
 
 def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
-                 bow_lo, bow_hi, warp_imgs, bow_imgs):
+                 bow_lo, bow_hi, warp_imgs, bow_imgs, confidence, conf_note,
+                 pred_bow, mae):
     def trend_block(imgs):
         cells = ''.join(
             f'<div class="trend-cell">{_img_tag(imgs.get(p))}</div>'
             for p in ['Total','Seed','Mid','Tail'])
-        return f'<div class="trend-row">{cells}</div>'
+        return f'<div class="trend-grid">{cells}</div>'
+
+    # 신뢰도 배지
+    conf_map = {
+        'high': ('신뢰도 높음', '#1a7a4c', '#e6f4ec', '#1a7a4c'),
+        'low':  ('신뢰도 낮음', '#a8760a', '#fdf3e0', '#a8760a'),
+        'unknown': ('신뢰도 판정 불가', '#64748b', '#f1f5f9', '#64748b'),
+    }
+    clabel, ccolor, cbg, cborder = conf_map.get(confidence, conf_map['unknown'])
+
+    spec_lo, spec_hi = cfg.get('bow_spec', (1.5, 2.0))
+    tgt = cfg.get('bow_target', 1.75)
 
     return f'''<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Wire Saw APC Report - {eqp}</title>
+<title>{cfg["report_title"]} — {eqp}</title>
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  :root {{
+    --navy: #14273f; --steel: #1b3a5c; --slate: #4a5568;
+    --line: #d9dee5; --line-strong: #b8c0cb;
+    --bg: #eef1f4; --paper: #ffffff;
+    --accent: #1b3a5c; --warn: #a8760a;
+  }}
   body {{
-    font-family: -apple-system, 'Malgun Gothic', 'Segoe UI', sans-serif;
-    background: #f5f6f8; color: #1f2933; line-height: 1.5;
-    padding: 32px 16px;
+    font-family: "Segoe UI", -apple-system, "Malgun Gothic", sans-serif;
+    background: var(--bg); color: #1a2230; line-height: 1.55;
+    padding: 28px 14px; -webkit-font-smoothing: antialiased;
   }}
-  .report {{
-    max-width: 960px; margin: 0 auto; background: #fff;
-    border: 1px solid #dfe3e8; border-radius: 8px;
-    padding: 40px 44px; box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+  .doc {{
+    max-width: 1000px; margin: 0 auto; background: var(--paper);
+    border: 1px solid var(--line-strong);
   }}
-  .header {{
-    border-bottom: 3px solid #2c6e9c; padding-bottom: 20px; margin-bottom: 28px;
+  /* ── 문서 헤더 (레터헤드) ── */
+  .letterhead {{
+    border-top: 5px solid var(--navy);
+    padding: 26px 40px 20px; border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: flex-start;
   }}
-  .header h1 {{
-    font-size: 26px; color: #1a4971; letter-spacing: -0.5px; margin-bottom: 12px;
+  .lh-left .eyebrow {{
+    font-size: 11px; letter-spacing: 2.5px; text-transform: uppercase;
+    color: var(--slate); font-weight: 600; margin-bottom: 6px;
   }}
-  .meta-row {{ display: flex; gap: 32px; font-size: 14px; color: #52606d; }}
-  .meta-row .label {{ font-weight: 700; color: #2c6e9c; margin-right: 6px; }}
-  .section {{ margin-bottom: 36px; }}
-  .section-title {{
-    font-size: 18px; font-weight: 700; color: #1a4971;
-    background: #eef4f9; padding: 8px 14px; border-radius: 5px;
-    margin-bottom: 18px; border-left: 4px solid #2c6e9c;
+  .lh-left h1 {{
+    font-size: 25px; color: var(--navy); font-weight: 700;
+    letter-spacing: -0.3px;
   }}
-  .subsection-title {{
-    font-size: 15px; font-weight: 700; color: #2c6e9c;
-    margin: 18px 0 10px;
+  .lh-meta {{ text-align: right; font-size: 13px; color: var(--slate); }}
+  .lh-meta table {{ border-collapse: collapse; }}
+  .lh-meta td {{ padding: 2px 0 2px 16px; }}
+  .lh-meta .k {{ color: #8a94a3; font-weight: 600; text-align: right;
+    font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase; }}
+  .lh-meta .v {{ color: var(--navy); font-weight: 700;
+    font-variant-numeric: tabular-nums; }}
+  /* ── 신뢰도 배너 ── */
+  .conf-banner {{
+    margin: 0 40px; margin-top: 20px; padding: 12px 18px;
+    background: {cbg}; border: 1px solid {cborder}33;
+    border-left: 4px solid {cborder}; border-radius: 3px;
+    display: flex; align-items: center; gap: 14px;
   }}
-  .recipe-block {{
-    display: flex; gap: 20px; align-items: flex-start;
-    margin-bottom: 24px; flex-wrap: wrap;
+  .conf-badge {{
+    font-size: 12px; font-weight: 700; color: #fff; background: {ccolor};
+    padding: 4px 12px; border-radius: 3px; white-space: nowrap;
+    letter-spacing: 0.3px;
   }}
-  .recipe-block img {{ max-width: 420px; border: 1px solid #e5e9ee; border-radius: 5px; }}
-  .recipe-tbl {{
-    border-collapse: collapse; font-size: 12px; margin-top: 6px;
+  .conf-note {{ font-size: 13px; color: #3a4453; }}
+  /* ── 섹션 ── */
+  .section {{ padding: 26px 40px; border-top: 1px solid var(--line); }}
+  .section:first-of-type {{ border-top: none; }}
+  .sec-head {{
+    display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px;
   }}
-  .recipe-tbl th, .recipe-tbl td {{
-    border: 1px solid #cfd6de; padding: 5px 8px; text-align: center;
+  .sec-num {{
+    font-size: 12px; font-weight: 700; color: #fff; background: var(--navy);
+    width: 22px; height: 22px; border-radius: 3px; display: inline-flex;
+    align-items: center; justify-content: center; flex-shrink: 0;
   }}
-  .recipe-tbl thead th {{ background: #2c6e9c; color: #fff; font-weight: 600; }}
-  .recipe-tbl tbody th {{ background: #eef4f9; color: #1a4971; }}
-  .bow-range {{
-    background: #fff8e6; border: 1px solid #f0d98a; border-radius: 6px;
-    padding: 16px 20px; font-size: 16px; margin-top: 8px;
+  .sec-title {{ font-size: 17px; font-weight: 700; color: var(--navy);
+    letter-spacing: -0.2px; }}
+  .sec-sub {{ font-size: 12px; color: #8a94a3; margin-left: auto;
+    font-weight: 500; }}
+  /* ── Recipe (그래프+테이블 가로 배치, 여백 활용) ── */
+  .recipe-item {{ margin-bottom: 22px; }}
+  .recipe-item:last-child {{ margin-bottom: 0; }}
+  .recipe-label {{
+    font-size: 14px; font-weight: 700; color: var(--steel);
+    margin-bottom: 12px; padding-left: 10px;
+    border-left: 3px solid var(--steel);
   }}
-  .bow-range .val {{ font-size: 22px; font-weight: 700; color: #c0563b; }}
-  .trend-row {{ display: flex; gap: 12px; flex-wrap: wrap; }}
-  .trend-cell {{ flex: 1; min-width: 180px; text-align: center; }}
-  .trend-cell img {{ width: 100%; border: 1px solid #e5e9ee; border-radius: 4px; }}
-  .trend-note {{ font-size: 12px; color: #7b8794; margin-bottom: 10px; }}
-  .muted {{ color: #9aa5b1; font-size: 13px; font-style: italic; }}
-  .footer {{
-    margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e9ee;
-    font-size: 12px; color: #9aa5b1; text-align: center;
+  .recipe-body {{ display: grid; grid-template-columns: 1.55fr 1fr;
+    gap: 24px; align-items: start; }}
+  .recipe-chart img {{ width: 100%; border: 1px solid var(--line);
+    border-radius: 3px; }}
+  .recipe-tbl {{ width: 100%; border-collapse: collapse; font-size: 12px;
+    font-variant-numeric: tabular-nums; }}
+  .recipe-tbl thead th {{
+    background: var(--navy); color: #fff; padding: 7px 10px;
+    font-weight: 600; font-size: 11px; letter-spacing: 0.5px;
+    text-transform: uppercase; text-align: center;
+  }}
+  .recipe-tbl td {{ border-bottom: 1px solid #eef1f4; padding: 5px 10px;
+    text-align: center; }}
+  .recipe-tbl .pct {{ color: var(--slate); font-weight: 600;
+    background: #f8fafb; width: 45%; }}
+  .recipe-tbl .val {{ color: var(--navy); font-weight: 700; }}
+  .recipe-tbl tbody tr:hover td {{ background: #f4f8fb; }}
+  /* ── 예상 BOW ── */
+  .bow-forecast {{
+    background: #f7f9fb; border: 1px solid var(--line);
+    border-radius: 4px; padding: 18px 22px; display: flex;
+    align-items: center; gap: 28px; flex-wrap: wrap;
+  }}
+  .bow-forecast .big {{ font-size: 30px; font-weight: 800; color: var(--steel);
+    font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }}
+  .bow-forecast .desc {{ font-size: 12.5px; color: var(--slate); }}
+  .bow-forecast .desc b {{ color: var(--navy); }}
+  .spec-chip {{ display: inline-block; font-size: 11px; padding: 2px 9px;
+    border-radius: 3px; background: #e6f4ec; color: #1a7a4c;
+    font-weight: 600; margin-left: 4px; }}
+  /* ── Trend ── */
+  .trend-note {{ font-size: 12px; color: #8a94a3; margin-bottom: 14px;
+    display: flex; gap: 16px; align-items: center; }}
+  .legend-item {{ display: inline-flex; align-items: center; gap: 5px; }}
+  .legend-line {{ width: 16px; height: 0; border-top: 2px solid; }}
+  .trend-grid {{ display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 14px; }}
+  .trend-cell img {{ width: 100%; border: 1px solid var(--line);
+    border-radius: 3px; }}
+  /* ── 푸터 ── */
+  .footer {{ padding: 18px 40px; border-top: 2px solid var(--navy);
+    font-size: 11.5px; color: #8a94a3; display: flex;
+    justify-content: space-between; }}
+  @media (max-width: 720px) {{
+    .recipe-body {{ grid-template-columns: 1fr; }}
+    .trend-grid {{ grid-template-columns: repeat(2, 1fr); }}
+    .letterhead {{ flex-direction: column; gap: 14px; }}
+    .lh-meta {{ text-align: left; }}
   }}
 </style>
 </head>
 <body>
-<div class="report">
-  <div class="header">
-    <h1>Wire Saw APC Report</h1>
-    <div class="meta-row">
-      <div><span class="label">Date</span>{today}</div>
-      <div><span class="label">장비명</span>{eqp}</div>
+<div class="doc">
+  <div class="letterhead">
+    <div class="lh-left">
+      <div class="eyebrow">Advanced Process Control · Wire Saw</div>
+      <h1>{cfg["report_title"]}</h1>
+    </div>
+    <div class="lh-meta">
+      <table>
+        <tr><td class="k">Date</td><td class="v">{today}</td></tr>
+        <tr><td class="k">Equipment</td><td class="v">{eqp}</td></tr>
+        <tr><td class="k">Target BOW</td><td class="v">{tgt}</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="conf-banner">
+    <span class="conf-badge">{clabel}</span>
+    <span class="conf-note">{conf_note}</span>
+  </div>
+
+  <div class="section">
+    <div class="sec-head">
+      <span class="sec-num">1</span>
+      <span class="sec-title">추천 Recipe</span>
+      <span class="sec-sub">직전 {cfg["window"]} lot 평균 조건 기반 역산</span>
+    </div>
+
+    <div class="recipe-item">
+      <div class="recipe-label">① Frame in Temp</div>
+      <div class="recipe-body">
+        <div class="recipe-chart">{_img_tag(frame_img)}</div>
+        <div>{frame_tbl}</div>
+      </div>
+    </div>
+
+    <div class="recipe-item">
+      <div class="recipe-label">② Slurry in Temp</div>
+      <div class="recipe-body">
+        <div class="recipe-chart">{_img_tag(slurry_img)}</div>
+        <div>{slurry_tbl}</div>
+      </div>
+    </div>
+
+    <div class="recipe-item">
+      <div class="recipe-label">③ Recipe 적용 시 예상 BOW</div>
+      <div class="bow-forecast">
+        <span class="big">{bow_lo} ~ {bow_hi}</span>
+        <span class="desc">
+          예측 <b>{pred_bow}</b> ± MAE <b>{mae:.2f}</b><br>
+          양품 스펙 <span class="spec-chip">{spec_lo} ~ {spec_hi}</span>
+          · 목표 <b>{tgt}</b>
+        </span>
+      </div>
     </div>
   </div>
 
   <div class="section">
-    <div class="section-title">추천 Recipe</div>
-
-    <div class="subsection-title">① Frame in Temp</div>
-    <div class="recipe-block">
-      {_img_tag(frame_img, 'Frame Temp')}
-      <div>{frame_tbl}</div>
+    <div class="sec-head">
+      <span class="sec-num">2</span>
+      <span class="sec-title">Warp Trend</span>
+      <span class="sec-sub">최근 {cfg["trend_n"]} lot</span>
     </div>
-
-    <div class="subsection-title">② Slurry in Temp</div>
-    <div class="recipe-block">
-      {_img_tag(slurry_img, 'Slurry Temp')}
-      <div>{slurry_tbl}</div>
-    </div>
-
-    <div class="subsection-title">③ Recipe 적용 시 예상 BOW 범위</div>
-    <div class="bow-range">
-      <span class="val">{bow_lo} ~ {bow_hi}</span>
-      <span style="color:#7b8794; font-size:13px; margin-left:12px;">
-        (목표 {cfg['target_bow']}, 예측 ± MAE 기준)</span>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Warp Trend</div>
-    <div class="trend-note">X축: 시간 순서 기준 최근 {cfg['trend_n']} lot</div>
+    <div class="trend-note">X축: 최근 lot ID (시간 순)</div>
     {trend_block(warp_imgs)}
   </div>
 
   <div class="section">
-    <div class="section-title">Bow Trend</div>
-    <div class="trend-note">X축: 시간 순서 기준 최근 {cfg['trend_n']} lot</div>
+    <div class="sec-head">
+      <span class="sec-num">3</span>
+      <span class="sec-title">Bow Trend</span>
+      <span class="sec-sub">최근 {cfg["trend_n"]} lot</span>
+    </div>
+    <div class="trend-note">
+      <span>X축: 최근 lot ID (시간 순)</span>
+      <span class="legend-item"><span class="legend-line" style="border-color:#27ae60;border-top-style:dashed;"></span>스펙</span>
+      <span class="legend-item"><span class="legend-line" style="border-color:#4a5568;border-top-style:dotted;"></span>목표</span>
+    </div>
     {trend_block(bow_imgs)}
   </div>
 
   <div class="footer">
-    Wire Saw APC 자동 추천 시스템 · 본 추천은 엔지니어 검토 후 반영 여부를 결정하세요.
+    <span>Wire Saw APC 자동 추천 시스템</span>
+    <span>본 추천은 엔지니어 검토 후 반영 여부를 결정합니다.</span>
   </div>
 </div>
 </body>
