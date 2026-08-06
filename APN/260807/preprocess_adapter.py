@@ -107,10 +107,39 @@ def adapt_columns(df, verbose=True):
     # 적용
     df = df.rename(columns=rename)
 
+    # ── process_time 파생 (RECIPE_ID → 133/180 그룹) ──
+    # RECIPE_ID에서 3자리 숫자 추출 → recipe_map으로 13.3Hr/18.5Hr 분류
+    #   133 or 150 → '13.3Hr'  (133 그룹)
+    #   185 or 180 → '18.5Hr'  (180 그룹)
+    if 'process_time' not in df.columns:
+        rid_col = _find(df, ['RECIPE_ID', 'FDC_RECIPE_ID', 'fdc_recipe_id',
+                             'RECIP_ID_3200', 'recip_id_3200'])
+        if rid_col:
+            import re
+            recipe_time = df[rid_col].astype(str).str.extract(r'(\d{3})')[0]
+            recipe_time = pd.to_numeric(recipe_time, errors='coerce')
+            recipe_map = {'13.3Hr': [133, 150], '18.5Hr': [185, 180]}
+            def to_process_time(v):
+                if pd.isna(v):
+                    return None
+                iv = int(v)
+                for label, vals in recipe_map.items():
+                    if iv in vals:
+                        return label
+                return None
+            df['process_time'] = recipe_time.apply(to_process_time)
+            n_133 = (df['process_time'] == '13.3Hr').sum()
+            n_185 = (df['process_time'] == '18.5Hr').sum()
+            if verbose:
+                print(f"  process_time 파생: {rid_col} → "
+                      f"13.3Hr={n_133}, 18.5Hr={n_185}")
+        elif verbose:
+            print(f"  ⚠ RECIPE_ID 없음 → process_time 파생 불가")
+
     if verbose:
         print(f"[어댑터] {len(rename)}개 컬럼 변환")
         # 리포트 필수 컬럼 존재 확인
-        need_total = ['eqp_nm_3200', 'new_fdc_wire_id', 'date_3200',
+        need_total = ['eqp_nm_3200', 'fdc_new_wire_id', 'date_3200',
                       'avg_bow_bf_total']
         for c in need_total:
             mark = '✓' if c in df.columns else '✗ 없음'
