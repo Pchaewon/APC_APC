@@ -21,8 +21,10 @@ import numpy as np
 
 PCTS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99, 100]
 
-# process_time 유효 라벨 / RECIPE_ID recipe_time(3자리) → 라벨 매핑
-#   ★ 실제 RECIPE_ID 분포 확인 후 아래 매핑을 잠글 것
+# process_time 유효 라벨 / RECIPE_ID의 하이픈 뒤 코드 → 라벨 매핑
+#   ★ 실제 RECIPE_ID 분포 기준 (10-150, 2-133 등)
+#   133/150→13.3Hr, 185/180→18.5Hr.
+#   21-7 / 21-8 은 process_time 미확인 → 의도적으로 매핑 안 함(NaN → 필터에서 제외).
 VALID_PT = {'13.3Hr', '18.5Hr'}
 RECIPE_TIME_MAP = {
     '133': '13.3Hr', '150': '13.3Hr',
