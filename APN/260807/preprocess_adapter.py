@@ -1,24 +1,37 @@
 # -*- coding: utf-8 -*-
 """
-preprocess 출력 → 리포트 입력 컬럼 어댑터
+preprocess 출력 → 리포트 입력 컬럼 어댑터  (process_time 재파생 수정판)
 ─────────────────────────────────────────
 pilot_wiresaw_preprocess.py 출력(대문자, SL-BOW-BF 등)을
 generate_report.py가 기대하는 컬럼명(avg_bow_bf_total 등)으로 변환.
 
-현재 단계: Total만. seed/mid/tail은 컬럼 없으면 리포트가 자동 "데이터 없음" 처리.
+★ 이번 수정 핵심 (process_time=0 버그)
+  기존: `if 'process_time' not in df.columns:` → PROCESS_TIME(=0) placeholder가
+        rename으로 들어오면 "이미 존재"로 판정, 파생 스킵 → 0이 그대로 남음
+  수정: RECIPE_ID를 권위 소스로, process_time 값이 무효(0/nan/'' 등)면 재파생.
+        파생 실패는 0이 아닌 NaN + 경고 로깅 (하류 미검출 방지).
 
 사용:
   from preprocess_adapter import adapt_columns
   df_report = adapt_columns(df_preprocessed)
 """
+import re
 import pandas as pd
 import numpy as np
 
 PCTS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99, 100]
 
+# process_time 유효 라벨 / RECIPE_ID recipe_time(3자리) → 라벨 매핑
+#   ★ 실제 RECIPE_ID 분포 확인 후 아래 매핑을 잠글 것
+VALID_PT = {'13.3Hr', '18.5Hr'}
+RECIPE_TIME_MAP = {
+    '133': '13.3Hr', '150': '13.3Hr',
+    '185': '18.5Hr', '180': '18.5Hr',
+}
+
 
 def _find(df, candidates):
-    """후보 컬럼명 중 실제 존재하는 첫 번째 반환 (대소문자 무시)."""
+    """후보 컬럼명 중 실제 존재하는 첫 번째 반환 (대소문자 무시, 완전일치)."""
     upper_map = {c.upper(): c for c in df.columns}
     for cand in candidates:
         if cand.upper() in upper_map:
@@ -26,9 +39,22 @@ def _find(df, candidates):
     return None
 
 
+def _derive_pt(recipe_id):
+    """RECIPE_ID('2-133', '10-150' 등) → process_time 라벨.
+    파생 불가 시 np.nan (0이나 임의값으로 채우지 않음)."""
+    if pd.isna(recipe_id):
+        return np.nan
+    s = str(recipe_id).strip()
+    # 하이픈 뒤 3자리 숫자, 끝에 '.0' 붙은 float화 방어 ('2-133.0')
+    m = re.search(r'-\s*(\d{3})(?:\.0+)?\s*$', s)
+    if not m:
+        return np.nan
+    return RECIPE_TIME_MAP.get(m.group(1), np.nan)
+
+
 def adapt_columns(df, verbose=True):
     """
-    preprocess DataFrame → 리포트용 DataFrame (컬럼명 변환).
+    preprocess DataFrame → 리포트용 DataFrame (컬럼명 변환 + process_time 재파생).
     없는 컬럼은 건너뜀 (리포트가 "데이터 없음" 처리).
     """
     df = df.copy()
@@ -107,43 +133,52 @@ def adapt_columns(df, verbose=True):
     # 적용
     df = df.rename(columns=rename)
 
-    # ── process_time 파생 (RECIPE_ID → 13.3Hr/18.5Hr) ──
-    #   RECIPE_ID 형태: '숫자-숫자' (예: 2-133, 10-150, 11-185)
-    #   하이픈 뒤 3자리가 recipe_time → 13.3Hr/18.5Hr 분류
-    #     133 or 150 → '13.3Hr'    185 or 180 → '18.5Hr'
-    if 'process_time' not in df.columns:
-        rid_col = _find(df, ['RECIPE_ID'])
-        if rid_col:
-            recipe_time = pd.to_numeric(
-                df[rid_col].astype(str).str.extract(r'-\s*(\d{3})')[0],
-                errors='coerce')
-            recipe_map = {'13.3Hr': [133, 150], '18.5Hr': [185, 180]}
-            def to_process_time(v):
-                if pd.isna(v):
-                    return None
-                for label, vals in recipe_map.items():
-                    if int(v) in vals:
-                        return label
-                return None
-            df['process_time'] = recipe_time.apply(to_process_time)
-            if verbose:
-                n133 = (df['process_time'] == '13.3Hr').sum()
-                n185 = (df['process_time'] == '18.5Hr').sum()
-                print(f"  process_time 파생: RECIPE_ID → "
-                      f"13.3Hr={n133}, 18.5Hr={n185}")
-        elif verbose:
-            print(f"  ⚠ RECIPE_ID 없음 → process_time 파생 불가")
+    # ════════════════════════════════════════════════════════════
+    # ★ process_time 파생/재파생 (RECIPE_ID = 권위 소스)
+    #   정책: PROCESS_TIME/RUNTIME_MINUTES 컬럼이 rename으로 들어와도(0 등),
+    #         값이 무효면 신뢰하지 않고 RECIPE_ID에서 재파생.
+    #         파생 실패는 NaN + 경고 (0으로 채워 조용히 오추천 내는 것 방지).
+    # ════════════════════════════════════════════════════════════
+    rid_col = _find(df, ['RECIPE_ID'])   # 정확 매칭: RECIP_ID / RECIPE_ID_3200 제외
+    if rid_col is None:
+        if verbose:
+            print("  ⚠ RECIPE_ID 컬럼 없음 → process_time 재파생 불가")
+        if 'process_time' not in df.columns:
+            df['process_time'] = np.nan
+    else:
+        derived = df[rid_col].map(_derive_pt)
+        if 'process_time' not in df.columns:
+            df['process_time'] = derived
+            n_redrv = int(df['process_time'].notna().sum())
+        else:
+            existing = df['process_time'].astype(str).str.strip()
+            invalid = ~existing.isin(VALID_PT)   # 0, 0.0, '', nan 전부 무효 취급
+            n_redrv = int(invalid.sum())
+            # process_time이 숫자(int/float 0)로 들어와 있으면 문자열 라벨 대입 시
+            # dtype 충돌 → 먼저 object로 캐스팅
+            df['process_time'] = df['process_time'].astype(object)
+            df.loc[invalid, 'process_time'] = derived[invalid].values
+
+        n_ok = int(df['process_time'].isin(VALID_PT).sum())
+        if verbose:
+            print(f"  process_time: 유효 {n_ok}/{len(df)}행 "
+                  f"(무효→재파생 시도 {n_redrv}행)")
+            if n_ok < len(df):
+                bad = (df.loc[~df['process_time'].isin(VALID_PT), rid_col]
+                       .astype(str).unique()[:5])
+                print(f"    ⚠ 여전히 무효 {len(df)-n_ok}행 — "
+                      f"RECIPE_ID 샘플: {list(bad)}")
 
     if verbose:
         print(f"[어댑터] {len(rename)}개 컬럼 변환")
-        # 리포트 필수 컬럼 존재 확인
         need_total = ['eqp_nm_3200', 'fdc_new_wire_id', 'date_3200',
                       'avg_bow_bf_total']
         for c in need_total:
             mark = '✓' if c in df.columns else '✗ 없음'
             print(f"  {mark} {c}")
         if missing:
-            print(f"  ⚠ 미확인(스킵됨): {[m for m in missing if 'total' in m or m in need_total]}")
+            print(f"  ⚠ 미확인(스킵됨): "
+                  f"{[m for m in missing if 'total' in m or m in need_total]}")
 
     return df
 
@@ -159,7 +194,6 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         out = adapt_from_csv(sys.argv[1])
         print(f"\n최종 {len(out)}행 x {len(out.columns)}컬럼")
-        # 리포트 관련 컬럼만 출력
         report_cols = [c for c in out.columns if c.startswith(('set_', 'avg_',
                        'shift_of_', 'fdc_', 'eqp_', 'new_', 'date_', 'range_',
                        'process_', 'warm_'))]
