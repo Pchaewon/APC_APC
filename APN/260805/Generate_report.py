@@ -140,14 +140,14 @@ def fig_to_base64(fig):
     return base64.b64encode(buf.read()).decode('utf-8')
 
 
-def plot_profile(pcts, values, title, ylabel='Temp (°C)', accent='#1b3a5c'):
+def plot_profile(pcts, values, title, ylabel='Temp (°C)', accent='#1a1a1a'):
     fig, ax = plt.subplots(figsize=(6.0, 3.0))
     ax.plot(pcts, values, 'o-', color=accent, linewidth=2, markersize=5,
             markerfacecolor='white', markeredgewidth=1.5, zorder=3)
     ax.fill_between(pcts, values, min(v for v in values if v is not None),
-                    alpha=0.06, color=accent, zorder=1)
-    ax.set_xlabel('Position (%)', fontsize=9, color='#4a5568')
-    ax.set_ylabel(ylabel, fontsize=9, color='#4a5568')
+                    alpha=0.05, color='#000000', zorder=1)
+    ax.set_xlabel('Position (%)', fontsize=9, color='#333333')
+    ax.set_ylabel(ylabel, fontsize=9, color='#333333')
     ax.grid(alpha=0.25, linewidth=0.6)
     ax.set_xticks([0,10,20,30,40,50,60,70,80,90,100])
     ax.tick_params(labelsize=8, colors='#4a5568')
@@ -160,7 +160,7 @@ def plot_profile(pcts, values, title, ylabel='Temp (°C)', accent='#1b3a5c'):
 
 
 def plot_trend_row(recent, cols_map, trend_n, title_prefix, lot_labels=None,
-                   spec=None, target=None, accent='#c0563b'):
+                   spec=None, target=None, accent='#1a1a1a'):
     """Total/Seed/Mid/Tail 4개 그래프. 스펙선·목표선 옵션, x축 겹침 방지."""
     imgs = {}
     for pos, col in cols_map.items():
@@ -175,11 +175,11 @@ def plot_trend_row(recent, cols_map, trend_n, title_prefix, lot_labels=None,
                 x = np.arange(len(y))
                 # 스펙/목표 (BOW Trend에만)
                 if spec is not None:
-                    ax.axhspan(spec[0], spec[1], color='#2ecc71', alpha=0.07, zorder=0)
-                    ax.axhline(spec[0], color='#27ae60', lw=0.8, ls='--', alpha=0.7, zorder=1)
-                    ax.axhline(spec[1], color='#27ae60', lw=0.8, ls='--', alpha=0.7, zorder=1)
+                    ax.axhspan(spec[0], spec[1], color='#000000', alpha=0.05, zorder=0)
+                    ax.axhline(spec[0], color='#666666', lw=0.9, ls='--', alpha=0.8, zorder=1)
+                    ax.axhline(spec[1], color='#666666', lw=0.9, ls='--', alpha=0.8, zorder=1)
                 if target is not None:
-                    ax.axhline(target, color='#4a5568', lw=0.8, ls=':', alpha=0.8, zorder=1)
+                    ax.axhline(target, color='#1a1a1a', lw=1.0, ls=':', alpha=0.9, zorder=1)
                 ax.plot(x, y, 'o-', color=accent, linewidth=1.8, markersize=4,
                         markerfacecolor='white', markeredgewidth=1.2, zorder=3)
                 # x축 겹침 방지: lot 라벨을 최대 5개만 (처음/끝 포함 균등)
@@ -194,11 +194,11 @@ def plot_trend_row(recent, cols_map, trend_n, title_prefix, lot_labels=None,
                     ax.set_xticklabels([labels[i] for i in show_idx],
                                        fontsize=6.5, rotation=45, ha='right',
                                        color='#4a5568')
-            ax.set_title(pos, fontsize=10, fontweight='bold', color='#1b3a5c')
+            ax.set_title(pos, fontsize=10, fontweight='bold', color='#1a1a1a')
         else:
             ax.text(0.5, 0.5, '컬럼 없음', ha='center', va='center',
                     transform=ax.transAxes, fontsize=8, color='#a0aec0')
-            ax.set_title(pos, fontsize=10, fontweight='bold', color='#1b3a5c')
+            ax.set_title(pos, fontsize=10, fontweight='bold', color='#1a1a1a')
         ax.grid(alpha=0.22, linewidth=0.6)
         ax.tick_params(labelsize=7, colors='#4a5568')
         for spine in ['top','right']:
@@ -266,9 +266,9 @@ def build_report(cfg):
                   if frame_inv else [None]*12)
     slurry_vals = ([slurry_inv['recipe'].get(c) for c in cfg['slurry_cols']]
                    if slurry_inv else [None]*12)
-    frame_img = (plot_profile(pcts, frame_vals, 'Frame in Temp', accent='#1b3a5c')
+    frame_img = (plot_profile(pcts, frame_vals, 'Frame in Temp', accent='#1a1a1a')
                  if frame_inv else None)
-    slurry_img = (plot_profile(pcts, slurry_vals, 'Slurry in Temp', accent='#2c7a7b')
+    slurry_img = (plot_profile(pcts, slurry_vals, 'Slurry in Temp', accent='#555555')
                   if slurry_inv else None)
 
     # ── Trend 그림 ──
@@ -289,10 +289,10 @@ def build_report(cfg):
         lot_labels = esub[lot_col].tail(cfg['trend_n']).astype(str).tolist()
         print(f"  lot 이름 컬럼: '{lot_col}', 예시: {lot_labels[:2]}")
     warp_imgs = plot_trend_row(esub, cfg['warp_cols'], cfg['trend_n'], 'Warp',
-                               lot_labels=lot_labels, accent='#b7791f')
+                               lot_labels=lot_labels, accent='#555555')
     bow_imgs = plot_trend_row(esub, cfg['bow_cols'], cfg['trend_n'], 'Bow',
                               lot_labels=lot_labels, spec=cfg.get('bow_spec'),
-                              target=cfg.get('bow_target'), accent='#c0563b')
+                              target=cfg.get('bow_target'), accent='#1a1a1a')
 
     # ── 테이블 HTML (세로형: %와 추천값 2열) ──
     def profile_table(vals, cols):
@@ -341,9 +341,9 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
 
     # 신뢰도 배지
     conf_map = {
-        'high': ('신뢰도 높음', '#1a7a4c', '#e6f4ec', '#1a7a4c'),
-        'low':  ('신뢰도 낮음', '#a8760a', '#fdf3e0', '#a8760a'),
-        'unknown': ('신뢰도 판정 불가', '#64748b', '#f1f5f9', '#64748b'),
+        'high': ('신뢰도 높음', '#1a1a1a', '#f2f2f2', '#1a1a1a'),
+        'low':  ('신뢰도 낮음', '#666666', '#f7f7f7', '#999999'),
+        'unknown': ('신뢰도 판정 불가', '#999999', '#fafafa', '#cccccc'),
     }
     clabel, ccolor, cbg, cborder = conf_map.get(confidence, conf_map['unknown'])
 
@@ -359,14 +359,14 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   :root {{
-    --navy: #14273f; --steel: #1b3a5c; --slate: #4a5568;
-    --line: #d9dee5; --line-strong: #b8c0cb;
-    --bg: #eef1f4; --paper: #ffffff;
-    --accent: #1b3a5c; --warn: #a8760a;
+    --navy: #111111; --steel: #1a1a1a; --slate: #555555;
+    --line: #e2e2e2; --line-strong: #b0b0b0;
+    --bg: #ededed; --paper: #ffffff;
+    --accent: #1a1a1a; --warn: #666666;
   }}
   body {{
     font-family: "Segoe UI", -apple-system, "Malgun Gothic", sans-serif;
-    background: var(--bg); color: #1a2230; line-height: 1.55;
+    background: var(--bg); color: #1a1a1a; line-height: 1.55;
     padding: 28px 14px; -webkit-font-smoothing: antialiased;
   }}
   .doc {{
@@ -390,7 +390,7 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
   .lh-meta {{ text-align: right; font-size: 13px; color: var(--slate); }}
   .lh-meta table {{ border-collapse: collapse; }}
   .lh-meta td {{ padding: 2px 0 2px 16px; }}
-  .lh-meta .k {{ color: #8a94a3; font-weight: 600; text-align: right;
+  .lh-meta .k {{ color: #888888; font-weight: 600; text-align: right;
     font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase; }}
   .lh-meta .v {{ color: var(--navy); font-weight: 700;
     font-variant-numeric: tabular-nums; }}
@@ -420,7 +420,7 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
   }}
   .sec-title {{ font-size: 17px; font-weight: 700; color: var(--navy);
     letter-spacing: -0.2px; }}
-  .sec-sub {{ font-size: 12px; color: #8a94a3; margin-left: auto;
+  .sec-sub {{ font-size: 12px; color: #888888; margin-left: auto;
     font-weight: 500; }}
   /* ── Recipe (그래프+테이블 가로 배치, 여백 활용) ── */
   .recipe-item {{ margin-bottom: 22px; }}
@@ -444,12 +444,12 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
   .recipe-tbl td {{ border-bottom: 1px solid #eef1f4; padding: 5px 10px;
     text-align: center; }}
   .recipe-tbl .pct {{ color: var(--slate); font-weight: 600;
-    background: #f8fafb; width: 45%; }}
+    background: #f7f7f7; width: 45%; }}
   .recipe-tbl .val {{ color: var(--navy); font-weight: 700; }}
-  .recipe-tbl tbody tr:hover td {{ background: #f4f8fb; }}
+  .recipe-tbl tbody tr:hover td {{ background: #f4f4f4; }}
   /* ── 예상 BOW ── */
   .bow-forecast {{
-    background: #f7f9fb; border: 1px solid var(--line);
+    background: #f7f7f7; border: 1px solid var(--line);
     border-radius: 4px; padding: 18px 22px; display: flex;
     align-items: center; gap: 28px; flex-wrap: wrap;
   }}
@@ -458,10 +458,10 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
   .bow-forecast .desc {{ font-size: 12.5px; color: var(--slate); }}
   .bow-forecast .desc b {{ color: var(--navy); }}
   .spec-chip {{ display: inline-block; font-size: 11px; padding: 2px 9px;
-    border-radius: 3px; background: #e6f4ec; color: #1a7a4c;
-    font-weight: 600; margin-left: 4px; }}
+    border-radius: 3px; background: #f0f0f0; color: #1a1a1a;
+    font-weight: 600; margin-left: 4px; border: 1px solid #d5d5d5; }}
   /* ── Trend ── */
-  .trend-note {{ font-size: 12px; color: #8a94a3; margin-bottom: 14px;
+  .trend-note {{ font-size: 12px; color: #888888; margin-bottom: 14px;
     display: flex; gap: 16px; align-items: center; }}
   .legend-item {{ display: inline-flex; align-items: center; gap: 5px; }}
   .legend-line {{ width: 16px; height: 0; border-top: 2px solid; }}
@@ -471,7 +471,7 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
     border-radius: 3px; }}
   /* ── 푸터 ── */
   .footer {{ padding: 18px 40px; border-top: 2px solid var(--navy);
-    font-size: 11.5px; color: #8a94a3; display: flex;
+    font-size: 11.5px; color: #888888; display: flex;
     justify-content: space-between; }}
   @media (max-width: 720px) {{
     .recipe-body {{ grid-template-columns: 1fr; }}
@@ -556,8 +556,8 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
     </div>
     <div class="trend-note">
       <span>X축: 최근 lot ID (시간 순)</span>
-      <span class="legend-item"><span class="legend-line" style="border-color:#27ae60;border-top-style:dashed;"></span>스펙</span>
-      <span class="legend-item"><span class="legend-line" style="border-color:#4a5568;border-top-style:dotted;"></span>목표</span>
+      <span class="legend-item"><span class="legend-line" style="border-color:#666666;border-top-style:dashed;"></span>스펙</span>
+      <span class="legend-item"><span class="legend-line" style="border-color:#1a1a1a;border-top-style:dotted;"></span>목표</span>
     </div>
     {trend_block(bow_imgs)}
   </div>
