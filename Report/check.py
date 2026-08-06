@@ -1,7 +1,8 @@
 import pandas as pd
-d = pd.read_csv('./data/field_store.csv')
-print('frame 실제:', [c for c in d.columns if 'set_frame_temp' in c][:3], '...')
-print('slurry 실제:', [c for c in d.columns if 'set_slurry_temp' in c][:3], '...')
-print('bow/warp:', [c for c in d.columns if 'bow' in c.lower() or 'warp' in c.lower()])
-print('조건:', [c for c in d.columns if any(k in c for k in ['ingot','wait','warm'])])
-print('식별:', [c for c in d.columns if any(k in c for k in ['eqp','wire','date'])])
+d = pd.read_csv('./data/WireSaw_Field_Test_preprocessed.csv', encoding='cp949')
+# 날짜 컬럼 찾기
+datecol = [c for c in d.columns if 'DTTM' in c.upper() or 'DATE' in c.upper()][:3]
+print('날짜 컬럼:', datecol)
+for c in datecol:
+    print(f'{c} 날짜분포:', d[c].astype(str).str[:8].value_counts().to_dict())
+print('총', len(d), '행')
