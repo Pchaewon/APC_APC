@@ -116,7 +116,13 @@ def adapt_columns(df, verbose=True):
                              'RECIP_ID_3200', 'recip_id_3200'])
         if rid_col:
             import re
-            recipe_time = df[rid_col].astype(str).str.extract(r'(\d{3})')[0]
+            # RECIPE_ID 형태: '숫자-숫자' (예: 2-133, 10-150, 11-185)
+            #   → 하이픈 뒤 숫자가 recipe_time. 없으면 마지막 3자리.
+            rid_str = df[rid_col].astype(str)
+            recipe_time = rid_str.str.extract(r'-\s*(\d{3})')[0]   # 하이픈 뒤 3자리
+            # 하이픈 없는 경우 fallback: 마지막 3자리 숫자
+            fallback = rid_str.str.extract(r'(\d{3})(?!.*\d)')[0]
+            recipe_time = recipe_time.fillna(fallback)
             recipe_time = pd.to_numeric(recipe_time, errors='coerce')
             recipe_map = {'13.3Hr': [133, 150], '18.5Hr': [185, 180]}
             def to_process_time(v):
