@@ -1,0 +1,1 @@
+python -c "import pandas as pd; d=pd.read_csv('./data/field_store.csv'); print('총', len(d), '행'); print(); print('장비별 행수:'); print(d['eqp_nm_3200'].value_counts()); print(); print('process_time 분포:'); print(d['process_time'].value_counts(dropna=False)); print(); print('장비 x process_time:'); print(d.groupby(['eqp_nm_3200','process_time']).size())"
