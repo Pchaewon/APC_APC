@@ -240,41 +240,70 @@ def plot_trend_row(recent, cols_map, trend_n, title_prefix, lot_labels=None,
     return imgs
 
 
-def plot_xfactor_pct(esub, wire_col, date_col, cols, title, trend_n=10):
-    """pct 프로파일 인자: 최근 10 lot(wire)의 프로파일을 겹쳐 그림.
-    선 10개, x축=pct 위치. 각 wire(lot)의 대표 프로파일(평균)."""
+def plot_xfactor_pct(esub, wire_col, date_col, cols, title, trend_n=10,
+                     lot_col=None):
+    """pct 프로파일 인자를 wire id별로 구획해 가로 연결.
+    구조: wire id > lot id > pct
+      · x축을 wire id 구간으로 나눔 (시간순)
+      · 각 wire 구간 = 그 wire의 lot들 pct 평균 (선 1개)
+      · 구간마다 pct(0~100%)로 프로파일을 가로로 펼침
+    """
     avail = [c for c in cols if c in esub.columns]
-    fig, ax = plt.subplots(figsize=(4.2, 3.0))
+    fig, ax = plt.subplots(figsize=(9.0, 3.0))
     if len(avail) == 0:
         ax.text(0.5, 0.5, f'{title}\n컬럼 없음', ha='center', va='center',
                 transform=ax.transAxes, fontsize=9, color='#a0aec0')
         ax.set_title(title, fontsize=10, fontweight='bold', color='#1a1a1a')
         return fig_to_base64(fig), 0
 
-    pcts = list(range(len(avail)))  # x축 위치 (0~11)
-    pct_labels = [c.split('_')[-1].replace('pct','') for c in avail]
-    # 최근 trend_n개 wire(lot)
-    recent_wires = (esub.sort_values(date_col)[wire_col].drop_duplicates()
-                    .tail(trend_n).tolist())
+    n_pct = len(avail)
+    # 최근 trend_n개 wire (시간순)
+    wire_order = (esub.sort_values(date_col)[wire_col].drop_duplicates()
+                  .tail(trend_n).tolist())
+    if len(wire_order) == 0:
+        ax.text(0.5, 0.5, 'wire 데이터 없음', ha='center', va='center',
+                transform=ax.transAxes, fontsize=9, color='#a0aec0')
+        ax.set_title(title, fontsize=10, fontweight='bold', color='#1a1a1a')
+        return fig_to_base64(fig), 0
+
+    x_cursor = 0
+    tick_positions = []   # wire 구간 중앙 (라벨용)
+    boundary_positions = []  # wire 구간 경계 (구분선)
     n_drawn = 0
-    # 흑백: 명도 그라데이션 (오래된 lot=연회색 → 최근=검정)
-    shades = np.linspace(0.75, 0.0, len(recent_wires))
-    for i, w in enumerate(recent_wires):
+    gap = 1  # wire 구간 사이 간격
+
+    for wi, w in enumerate(wire_order):
         wsub = esub[esub[wire_col] == w]
         if len(wsub) == 0:
             continue
-        # 그 wire의 각 pct 평균
+        # 이 wire의 lot들 pct 평균 (여러 lot → 평균 프로파일)
         prof = [wsub[c].mean() for c in avail]
-        gray = str(shades[i])
-        ax.plot(pcts, prof, '-', color=gray, linewidth=1.0, alpha=0.85,
-                zorder=2+i)
+        # x 좌표: 이 구간의 pct 위치
+        xs = list(range(x_cursor, x_cursor + n_pct))
+        ax.plot(xs, prof, '-', color='#1a1a1a', linewidth=1.3, zorder=3)
+        ax.plot(xs, prof, '.', color='#1a1a1a', markersize=2, zorder=3)
+        # 구간 중앙 (라벨)
+        tick_positions.append((w, x_cursor + n_pct/2 - 0.5))
         n_drawn += 1
-    ax.set_xticks(pcts)
-    ax.set_xticklabels(pct_labels, fontsize=7, color='#333333')
-    ax.set_xlabel('Position (%)', fontsize=8.5, color='#333333')
-    ax.set_title(f'{title}  (최근 {n_drawn} lot)', fontsize=10,
+        x_cursor += n_pct
+        # 구간 경계선
+        if wi < len(wire_order) - 1:
+            boundary_positions.append(x_cursor + gap/2 - 0.5)
+        x_cursor += gap
+
+    # wire 구간 경계 (연한 세로선)
+    for bx in boundary_positions:
+        ax.axvline(bx, color='#d0d0d0', linewidth=0.8, zorder=1)
+
+    # x축: wire id 라벨 (구간 중앙)
+    ax.set_xticks([pos for _, pos in tick_positions])
+    ax.set_xticklabels([str(w) for w, _ in tick_positions],
+                       fontsize=6.5, rotation=45, ha='right', color='#333333')
+    ax.set_xlabel('Wire ID (각 구간: pct 0→100%, 시간순)', fontsize=8.5,
+                  color='#333333')
+    ax.set_title(f'{title}  (wire {n_drawn}개 · lot평균 프로파일)', fontsize=10,
                  fontweight='bold', color='#1a1a1a')
-    ax.grid(alpha=0.22, linewidth=0.6)
+    ax.grid(axis='y', alpha=0.22, linewidth=0.6)
     ax.tick_params(labelsize=7, colors='#333333')
     for sp in ['top','right']: ax.spines[sp].set_visible(False)
     for sp in ['left','bottom']: ax.spines[sp].set_color('#cbd5e0')
@@ -421,7 +450,7 @@ def build_report(cfg):
     xpct_imgs = {}   # {라벨: (img, n)}
     for label, cols in cfg.get('xprofile_pct', {}).items():
         img, n = plot_xfactor_pct(esub, wire_col, cfg['date_col'], cols,
-                                  label, cfg['trend_n'])
+                                  label, cfg['trend_n'], lot_col=wire_col)
         xpct_imgs[label] = img
     xscalar_imgs = {}
     for label, col in cfg.get('xprofile_scalar', {}).items():
@@ -591,6 +620,10 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
   /* ── X-Factor ── */
   .xfactor-grid {{ display: grid; grid-template-columns: repeat(4, 1fr);
     gap: 14px; }}
+  .xfactor-wide {{ display: flex; flex-direction: column; gap: 18px; }}
+  .xf-wide-cell {{ width: 100%; }}
+  .xf-wide-cell img {{ width: 100%; border: 1px solid var(--line);
+    border-radius: 3px; }}
   .xf-cell {{ display: flex; flex-direction: column; }}
   .xf-label {{ font-size: 12px; font-weight: 700; color: var(--steel);
     margin-bottom: 6px; }}
@@ -696,13 +729,13 @@ def _render_html(cfg, eqp, today, frame_img, frame_tbl, slurry_img, slurry_tbl,
       <span class="sec-sub">최근 {cfg["trend_n"]} lot</span>
     </div>
     <div class="trend-note">
-      <span>pct 프로파일: 최근 10 lot 겹침 (연회색=과거, 검정=최근)</span>
+      <span>Wire ID별 구획 · 각 구간은 그 wire의 lot 평균 프로파일 (pct 0→100%)</span>
     </div>
-    <div class="xfactor-grid">
-      {''.join(f'<div class="xf-cell"><div class="xf-label">{lbl}</div>{_img_tag(img)}</div>' for lbl, img in xpct_imgs.items())}
+    <div class="xfactor-wide">
+      {''.join(f'<div class="xf-wide-cell"><div class="xf-label">{lbl}</div>{_img_tag(img)}</div>' for lbl, img in xpct_imgs.items())}
     </div>
     <div class="trend-note" style="margin-top:16px;">
-      <span>단일 값 인자: 최근 10 lot 추세</span>
+      <span>단일 값 인자: 최근 {cfg["trend_n"]} lot 추세</span>
     </div>
     <div class="xfactor-grid">
       {''.join(f'<div class="xf-cell"><div class="xf-label">{lbl}</div>{_img_tag(img)}</div>' for lbl, img in xscalar_imgs.items())}
