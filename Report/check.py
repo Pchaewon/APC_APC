@@ -1,16 +1,16 @@
-from datetime import timedelta   # 파일 상단에 이미 있으면 생략
+# FDC에 어떤 식별 컬럼이 있고, Y/3200과 뭐가 겹치는지
+print('[진단] FDC 컬럼:', [c for c in df_fdc.columns if any(k in c.upper() for k in ['LOT','WIRE','BLK','ID','SUBLOT','CAR','CST'])])
+print('[진단] Y/3200(df_merged) 식별 컬럼:', [c for c in df_merged.columns if any(k in c.upper() for k in ['LOT','WIRE','BLK','ID','SUBLOT','CAR','CST'])])
 
-# 검사 날짜 (기존)
-meas_dates_dt = sorted(pd.to_datetime(
-    df_3200['HIS_REGIST_DTTM'].astype(str).str[:8], errors='coerce'
-).dropna().unique().tolist())
+# FDC의 NEW_WIRE_ID vs Y쪽 wire 관련 컬럼 값 비교
+if 'NEW_WIRE_ID' in df_fdc.columns:
+    print('[진단] FDC NEW_WIRE_ID 샘플:', df_fdc['NEW_WIRE_ID'].dropna().unique()[:5].tolist())
 
-# ★ FDC는 가공 시점 기준이라 검사보다 며칠 앞섬 → 룩백 확장
-FDC_LOOKBACK_DAYS = 4   # 18Hr wire + 버퍼 (필요시 조정)
-fdc_date_set = set()
-for d in meas_dates_dt:
-    for i in range(FDC_LOOKBACK_DAYS + 1):
-        fdc_date_set.add((d - timedelta(days=i)).strftime('%Y%m%d'))
-meas_dates = sorted(fdc_date_set)
-print(f"  검사 날짜: {[d.strftime('%Y%m%d') for d in meas_dates_dt]}")
-print(f"  FDC 조회 날짜(룩백 {FDC_LOOKBACK_DAYS}일): {meas_dates}")
+
+
+
+print('[진단] 3200 컬럼 전체:', df_3200.columns.tolist())
+print('[진단] 3200 각 식별 컬럼 샘플:')
+for c in df_3200.columns:
+    if any(k in c.upper() for k in ['LOT','WIRE','BLK','ID','CAR','CST','SUBLOT']):
+        print(f'   {c}:', df_3200[c].dropna().unique()[:3].tolist())
