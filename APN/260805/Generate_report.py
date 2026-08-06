@@ -143,21 +143,37 @@ def plot_profile(pcts, values, title, ylabel='Temp'):
     return fig_to_base64(fig)
 
 
-def plot_trend_row(recent, cols_map, trend_n, title_prefix):
-    """Total/Seed/Mid/Tail 4개 그래프를 한 줄로."""
+def plot_trend_row(recent, cols_map, trend_n, title_prefix, lot_labels=None):
+    """Total/Seed/Mid/Tail 4개 그래프를 한 줄로.
+    lot_labels: x축에 표시할 lot 이름 리스트 (최근 trend_n개). None이면 순번."""
     imgs = {}
     for pos, col in cols_map.items():
-        fig, ax = plt.subplots(figsize=(3, 2.3))
+        fig, ax = plt.subplots(figsize=(3, 2.5))
         if col in recent.columns:
-            y = recent[col].dropna().tail(trend_n).values
-            x = np.arange(1, len(y)+1)
-            ax.plot(x, y, 'o-', color='#c0563b', linewidth=1.8, markersize=4)
+            s = recent[col].dropna().tail(trend_n)
+            y = s.values
+            if len(y) == 0:
+                ax.text(0.5, 0.5, f'{col}\n값 없음(빈 데이터)', ha='center',
+                        va='center', transform=ax.transAxes, fontsize=7,
+                        color='#c0563b')
+                print(f"    [{title_prefix}/{pos}] 컬럼 '{col}' 있으나 값 0개")
+            else:
+                x = np.arange(len(y))
+                ax.plot(x, y, 'o-', color='#c0563b', linewidth=1.8, markersize=4)
+                # x축 라벨: lot 이름 (해당 값들의 인덱스에 맞춰)
+                if lot_labels is not None:
+                    labels = lot_labels[-len(y):]  # 값 개수에 맞춤
+                    ax.set_xticks(x)
+                    ax.set_xticklabels(labels, fontsize=6, rotation=60, ha='right')
+                print(f"    [{title_prefix}/{pos}] '{col}' {len(y)}개 값 → 그림 OK")
             ax.set_title(pos, fontsize=10, fontweight='bold')
         else:
-            ax.text(0.5, 0.5, f'{col}\n없음', ha='center', va='center',
+            ax.text(0.5, 0.5, f'{col}\n컬럼 없음', ha='center', va='center',
                     transform=ax.transAxes, fontsize=8, color='gray')
             ax.set_title(pos, fontsize=10, fontweight='bold')
-        ax.set_xlabel('최근 lot', fontsize=8)
+            print(f"    [{title_prefix}/{pos}] 컬럼 '{col}' 자체가 데이터에 없음")
+        if lot_labels is None:
+            ax.set_xlabel('최근 lot', fontsize=8)
         ax.grid(alpha=0.3)
         ax.tick_params(labelsize=7)
         imgs[pos] = fig_to_base64(fig)
@@ -213,8 +229,26 @@ def build_report(cfg):
                   if slurry_inv else None)
 
     # ── Trend 그림 ──
-    warp_imgs = plot_trend_row(esub, cfg['warp_cols'], cfg['trend_n'], 'Warp')
-    bow_imgs = plot_trend_row(esub, cfg['bow_cols'], cfg['trend_n'], 'Bow')
+    print(f"\n[Trend 진단] 장비 {eqp} 데이터 {len(esub)}행")
+    if len(esub) == 0:
+        print(f"  ⚠ '{eqp}' 데이터가 recent_csv에 없음 → Trend 전부 빈칸")
+        print(f"     recent_csv의 장비 목록 확인 필요")
+    # x축 lot 이름 (최근 trend_n개)
+    lot_col = cfg.get('lot_col', cfg['wire_col'])
+    # 지정 컬럼 없으면 wire 관련 컬럼 자동 탐색 (이름 순서 헷갈림 방어)
+    if lot_col not in esub.columns:
+        cands = [c for c in esub.columns if 'wire' in c.lower() and 'id' in c.lower()]
+        if cands:
+            print(f"  ℹ lot_col '{lot_col}' 없음 → '{cands[0]}' 사용")
+            lot_col = cands[0]
+    lot_labels = None
+    if lot_col in esub.columns and len(esub) > 0:
+        lot_labels = esub[lot_col].tail(cfg['trend_n']).astype(str).tolist()
+        print(f"  lot 이름 컬럼: '{lot_col}', 예시: {lot_labels[:2]}")
+    warp_imgs = plot_trend_row(esub, cfg['warp_cols'], cfg['trend_n'], 'Warp',
+                               lot_labels=lot_labels)
+    bow_imgs = plot_trend_row(esub, cfg['bow_cols'], cfg['trend_n'], 'Bow',
+                              lot_labels=lot_labels)
 
     # ── 테이블 HTML ──
     def profile_table(vals, cols):
